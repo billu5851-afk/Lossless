@@ -28,6 +28,13 @@ function getModifiedFiles() {
           .filter(Boolean);
       }
     }
+    
+    try {
+      const localDiff = execSync('git diff --name-only').toString();
+      const stagedDiff = execSync('git diff --cached --name-only').toString();
+      diffOutput += '\n' + localDiff + '\n' + stagedDiff;
+    } catch (err) {}
+    
     return diffOutput.split('\n').map(f => f.trim()).filter(Boolean);
   } catch (err) {
     console.warn('Warning: Git is not available or main branch not found. Skipping strict sequential checking.');
@@ -75,6 +82,76 @@ function getItemTypeAndName(item) {
   return { songName, artistName, isSong, isAlbum, url };
 }
 
+function checkFileDeletionsOrModifications() {
+  try {
+    let diffOutput = '';
+    try {
+      diffOutput = execSync('git diff --name-status main...HEAD', { stdio: ['pipe', 'pipe', 'ignore'] }).toString();
+    } catch (e) {
+      try {
+        diffOutput = execSync('git diff --name-status origin/main...HEAD', { stdio: ['pipe', 'pipe', 'ignore'] }).toString();
+      } catch (e2) {
+        diffOutput = execSync('git status --porcelain', { stdio: ['pipe', 'pipe', 'ignore'] }).toString();
+      }
+    }
+    
+    const lines = diffOutput.split('\n').map(line => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      const parts = line.split(/\s+/);
+      if (parts.length >= 2) {
+        const status = parts[0];
+        const filePath = parts[1].replace(/\\/g, '/');
+        
+        if (filePath.startsWith('Song/') || filePath.startsWith('Album/')) {
+          if (status.includes('D') || status.includes('M') || status.includes('R')) {
+            return {
+              hasRemoval: true,
+              reason: `File '${filePath}' was modified, deleted, or renamed (status: ${status}).`
+            };
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Warning: Error checking file deletions/modifications:', err.message);
+  }
+  return { hasRemoval: false };
+}
+
+function verifyFileSignature(localPath, ext) {
+  try {
+    const stats = fs.statSync(localPath);
+    if (stats.size === 0) {
+      return 'File is empty (0 bytes).';
+    }
+    
+    if (ext === 'mp4') {
+      const buffer = Buffer.alloc(12);
+      const fd = fs.openSync(localPath, 'r');
+      fs.readSync(fd, buffer, 0, 12, 0);
+      fs.closeSync(fd);
+      
+      const headerStr = buffer.toString('binary');
+      if (!headerStr.includes('ftyp')) {
+        return 'File does not have a valid MP4 signature (missing ftyp header).';
+      }
+    } else if (ext === 'm3u8') {
+      const buffer = Buffer.alloc(7);
+      const fd = fs.openSync(localPath, 'r');
+      fs.readSync(fd, buffer, 0, 7, 0);
+      fs.closeSync(fd);
+      
+      const headerStr = buffer.toString('utf8');
+      if (headerStr !== '#EXTM3U') {
+        return 'File does not have a valid M3U8 signature (must start with #EXTM3U).';
+      }
+    }
+  } catch (err) {
+    return `Could not verify file signature: ${err.message}`;
+  }
+  return null;
+}
+
 function validate() {
   console.log('--- Starting canvas.json validation ---');
 
@@ -108,12 +185,41 @@ function validate() {
   const seen = new Set();
   const modifiedFiles = getModifiedFiles();
 
+  const baselineData = getBaselineCanvas();
+  const baselineItems = baselineData && baselineData.items ? baselineData.items : [];
+  const baselineItemKeys = new Set(
+    baselineItems.map(item => `${item.song || ''}|${item.artist || ''}|${item.url || ''}`)
+  );
+
   items.forEach((item, index) => {
     const { song, artist, url } = item;
 
     if (!song || !artist || !url) {
       errors.push({ index, song: song || 'N/A', artist: artist || 'N/A', error: 'Missing required fields' });
       return;
+    }
+
+    const itemKey = `${song || ''}|${artist || ''}|${url || ''}`;
+    const isNewOrModified = !baselineItemKeys.has(itemKey);
+
+    if (isNewOrModified) {
+      const cleanSong = song.trim();
+      const cleanArtist = artist.trim();
+      
+      if (!cleanSong || !cleanArtist) {
+        errors.push({ index, song, artist, error: 'Song title and artist name cannot be empty or whitespace-only' });
+      } else {
+        if (cleanSong.length > 100 || cleanArtist.length > 100) {
+          errors.push({ index, song, artist, error: 'Song title and artist name must be under 100 characters' });
+        }
+        if (/<[^>]*>/g.test(cleanSong) || /<[^>]*>/g.test(cleanArtist)) {
+          errors.push({ index, song, artist, error: 'HTML/Script tags are prohibited in song title and artist fields' });
+        }
+        const placeholders = ['test', 'temp', 'placeholder', 'undefined', 'null', 'unknown'];
+        if (placeholders.includes(cleanSong.toLowerCase()) || placeholders.includes(cleanArtist.toLowerCase())) {
+          errors.push({ index, song, artist, error: 'Generic placeholder text detected in song title or artist' });
+        }
+      }
     }
 
     const key = `${song.toLowerCase()}|${artist.toLowerCase()}`;
@@ -128,11 +234,25 @@ function validate() {
       errors.push({ index, song, artist, error: `Invalid file extension (must be .m3u8 or .mp4)` });
     }
 
+    let normalizedUrl = url;
+    if (!/^https?:\/\//i.test(normalizedUrl)) {
+      normalizedUrl = 'https://' + normalizedUrl;
+    }
+
     try {
-      const urlObj = new URL(url);
+      const urlObj = new URL(normalizedUrl);
       const pathname = urlObj.pathname;
       const match = pathname.match(/\/(Song|Album)\/(.+)$/i);
       
+      if (isNewOrModified) {
+        if (urlObj.hostname !== 'canvas.echomusic.fun') {
+          errors.push({ index, song, artist, error: `URL domain must be canvas.echomusic.fun (found: ${urlObj.hostname})` });
+        }
+        if (urlObj.search || urlObj.hash) {
+          errors.push({ index, song, artist, error: `URL cannot contain query parameters or fragment hashes` });
+        }
+      }
+
       if (match) {
         const directory = match[1];
         const filename = match[2];
@@ -154,6 +274,15 @@ function validate() {
                 artist, 
                 error: `File size of '${localPath}' is ${fileSizeMB.toFixed(2)}MB. Newly added files must be equal to or less than ${MAX_SIZE_MB}MB.` 
               });
+            }
+            if (stats.size === 0) {
+              errors.push({ index, song, artist, error: `File '${localPath}' is empty (0 bytes)` });
+            }
+            
+            const ext = filename.split('.').pop().toLowerCase();
+            const sigError = verifyFileSignature(localPath, ext);
+            if (sigError) {
+              errors.push({ index, song, artist, error: sigError });
             }
           }
         }
@@ -260,13 +389,37 @@ function validate() {
   } else {
     console.log('\n--- Validation PASSED! ---');
     
-    // Check if song or album already exists in baseline database
     let shouldDisableAutoMerge = false;
+    let removalDetected = false;
+    let removalReason = '';
     const matchedExistingNames = [];
     const baselineData = getBaselineCanvas();
     
+    const fileCheck = checkFileDeletionsOrModifications();
+    if (fileCheck.hasRemoval) {
+      shouldDisableAutoMerge = true;
+      removalDetected = true;
+      removalReason = fileCheck.reason;
+    }
+    
     if (baselineData && baselineData.items) {
       const baselineItems = baselineData.items;
+      
+      if (!removalDetected) {
+        for (const baselineItem of baselineItems) {
+          const exists = items.some(prItem => 
+            (prItem.song || '').trim() === (baselineItem.song || '').trim() &&
+            (prItem.artist || '').trim() === (baselineItem.artist || '').trim() &&
+            (prItem.url || '').trim() === (baselineItem.url || '').trim()
+          );
+          if (!exists) {
+            shouldDisableAutoMerge = true;
+            removalDetected = true;
+            removalReason = `An existing database entry was modified or removed: "${baselineItem.song}" by ${baselineItem.artist}.`;
+            break;
+          }
+        }
+      }
       
       const baselineSongs = new Set();
       const baselineAlbums = new Set();
@@ -324,9 +477,12 @@ function validate() {
     const autoMerge = !shouldDisableAutoMerge;
     
     if (shouldDisableAutoMerge) {
-      reportContent = `### ✅ Validation Passed (Manual Review Required)\n\nAll conditions met (file sizes <= 5MB, correct naming series, no internal duplicates).\n\n⚠️ **Auto-merge is disabled** because the following added/modified items already exist in the main database:\n`;
+      reportContent = `### ✅ Validation Passed (Manual Review Required)\n\nAll conditions met (file sizes <= 5MB, correct naming series, no internal duplicates).\n\n⚠️ **Auto-merge is disabled** for manual review:\n`;
+      if (removalDetected) {
+        reportContent += `- **Modification/Removal detected:** ${removalReason}\n`;
+      }
       matchedExistingNames.forEach(name => {
-        reportContent += `- ${name}\n`;
+        reportContent += `- **Already exists in database:** ${name}\n`;
       });
       reportContent += `\nA maintainer must manually review and merge this pull request.`;
     } else {
