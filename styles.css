@@ -1310,6 +1310,42 @@ footer a:hover {
     padding: 4rem 3rem;
 }
 
+.btn-github-pr {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65rem;
+    width: 100%;
+    padding: 1rem 2rem;
+    background: #24292f;
+    color: #ffffff;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.3px;
+    border: 1px solid #24292f;
+    border-radius: 12px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-github-pr i {
+    font-size: 1.2rem;
+}
+
+.btn-github-pr:hover {
+    background: #1b1f23;
+    border-color: #1b1f23;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+.btn-github-pr:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
 .contribute-container .btn {
     font-family: 'Space Grotesk', sans-serif;
     font-weight: 700;
