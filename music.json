@@ -1,6 +1,11 @@
 {
   "items": [
     {
+      "song": "High",
+      "artist": "The Chainsmokers",
+      "url": "https://lossless.echomusic.fun/Music/a12ko-the_chainsmokers_-_high.flac"
+    },
+    {
       "song": "Kanna Veesi",
       "artist": "Siddhu Kumar, Vignesh Ramakrishna, Rahul, Srinisha Jayaseelan & Punith",
       "url": "https://lossless.echomusic.fun/Music/rupeshrn-Kanna_Veesi.flac"
